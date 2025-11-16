@@ -21,7 +21,7 @@ async function main() {
       alias: 'i',
       type: 'boolean',
       description: 'Initialize mode: save schema and templates',
-      default: false,
+      default: true,
     })
     .option('purge', {
       alias: 'p',
@@ -35,9 +35,17 @@ async function main() {
       description: 'Confirm destructive operations (required for --purge)',
       default: false,
     })
+    .option('day', {
+      alias: 'd',
+      type: 'string',
+      description: 'Filter templates by Day column (e.g., Monday, Tuesday, etc.)',
+      default: 'Default',
+    })
     .example('$0 --init', 'Initialize schema and templates')
     .example('$0', 'Create time blocks for today')
     .example('$0 2024-03-15', 'Create time blocks for March 15, 2024')
+    .example('$0 --day Monday', 'Create time blocks for today, filtered by Monday templates')
+    .example('$0 2024-03-15 --day Friday', 'Create time blocks for March 15, 2024, filtered by Friday templates')
     .example('$0 --purge --confirm', 'Delete all time blocks from database')
     .help('h')
     .alias('h', 'help')
@@ -47,18 +55,20 @@ async function main() {
 
   try {
     const config = getConfig();
+    console.log(config);
+
+    if (argv.purge) {
+      await runPurgeMode(config, argv.confirm as boolean);
+      return;
+    }
 
     if (argv.init) {
-      // Run init mode
       await runInitMode(config);
-    } else if (argv.purge) {
-      // Run purge mode
-      await runPurgeMode(config, argv.confirm as boolean);
-    } else {
-      // Run scheduled mode
-      const targetDate = parseTargetDate(argv.date as string | undefined);
-      await runScheduledMode(config, targetDate);
     }
+
+    const targetDate = parseTargetDate(argv.date as string | undefined);
+    const dayFilter = argv.day as string | undefined;
+    await runScheduledMode(config, targetDate, dayFilter);
   } catch (error) {
     if (error instanceof Error) {
       console.error(`Error: ${error.message}`);

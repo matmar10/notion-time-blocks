@@ -64,6 +64,21 @@ export class NotionClientWrapper {
   }
 
   /**
+   * Update database schema (e.g., to add select options)
+   */
+  async updateDatabaseSchema(
+    databaseId: string,
+    properties: Record<string, any>
+  ): Promise<DatabaseObjectResponse> {
+    const response = await this.client.databases.update({
+      database_id: databaseId,
+      properties,
+    });
+
+    return response as DatabaseObjectResponse;
+  }
+
+  /**
    * Archive (delete) a page
    */
   async deletePage(pageId: string): Promise<void> {
