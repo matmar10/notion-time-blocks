@@ -136,15 +136,14 @@ function updatePropertiesForDate(
         }
       }
 
-      const newStartUTC= newStart.utc();
-      const newEndUTC = newEnd.utc();
+      const newStartUTC= newStart.utc(true);
+      const newEndUTC = newEnd.utc(true);
 
       const date = {
         start: newStartUTC.toISOString(),
         end: newEndUTC.toISOString(),
         time_zone: tz,
       };
-      console.log('FINAL DATE:', date);
 
       updated[key] = { date };
     } else if (value.type === 'title') {
@@ -377,11 +376,11 @@ function combineDateTimeWithReference(
   console.log('RAW TARGET DATE:', targetDate.format());
   console.log('RAW REFERENCE DATE:', referenceDate.format());
 
-  const templateDay = templateDate.clone().utc().startOf('day');
+  const templateDay = templateDate.clone().startOf('day');
   console.log('TEMPLATE DAY:', templateDay.format());
-  const refDay = referenceDate.clone().utc().startOf('day');
+  const refDay = referenceDate.clone().startOf('day');
   console.log('REFERENCE DAY:', refDay.format());
-  const targetDay = targetDate.clone().utc().startOf('day');
+  const targetDay = targetDate.clone().startOf('day');
   console.log('TARGET DAY:', targetDay.format());
 
   // Calculate how many days after the reference date this template datetime is
