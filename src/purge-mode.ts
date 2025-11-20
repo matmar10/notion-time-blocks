@@ -1,33 +1,64 @@
+import moment from 'moment-timezone';
+import type pino from 'pino';
 import { NotionClientWrapper } from './notion-client';
 import { Config } from './types';
+import { formatDate } from './date-utils';
 
 /**
- * Purge mode: Delete all entries from the time blocks database
+ * Purge mode: Delete entries from the time blocks database
+ * If targetDate is provided, only delete entries for that date
+ * Otherwise, delete all entries
  */
-export async function runPurgeMode(config: Config, confirmed: boolean): Promise<void> {
-  console.log('Running purge mode...');
-  console.log(`Time Blocks Database ID: ${config.timeBlocksDatabase}`);
+export async function runPurgeMode(config: Config, confirmed: boolean, targetDate: moment.Moment | undefined, logger: pino.Logger): Promise<void> {
+  logger.info('Running purge mode...');
+  logger.debug(`Time Blocks Database ID: ${config.timeBlocksDatabase}`);
+
+  if (targetDate) {
+    logger.debug(`Target date: ${formatDate(targetDate.toDate())}`);
+  }
 
   if (!confirmed) {
-    console.log('\n⚠️  WARNING: This will delete ALL entries from the time blocks database!');
-    console.log('   To confirm, run with: --purge --confirm');
-    console.log('\nAborting...');
+    if (targetDate) {
+      logger.warn(`WARNING: This will delete time blocks for ${formatDate(targetDate.toDate())}!`);
+    } else {
+      logger.warn('WARNING: This will delete ALL entries from the time blocks database!');
+    }
+    logger.info('To confirm, run with: --purge --confirm');
+    logger.info('Aborting...');
     return;
   }
 
-  const client = new NotionClientWrapper(config);
+  const client = new NotionClientWrapper(config, logger);
 
   // Fetch all pages from the time blocks database
-  console.log('\nFetching all time blocks...');
-  const pages = await client.getAllPages(config.timeBlocksDatabase);
+  logger.debug('Fetching all time blocks...');
+  const allPages = await client.getAllPages(config.timeBlocksDatabase);
 
-  if (pages.length === 0) {
-    console.log('No time blocks found. Database is already empty.');
+  if (allPages.length === 0) {
+    logger.info('No time blocks found. Database is already empty.');
     return;
   }
 
-  console.log(`Found ${pages.length} time blocks to delete`);
-  console.log('\nDeleting time blocks...');
+  // Filter pages by target date if specified
+  const pages = targetDate
+    ? filterPagesByDate(allPages, targetDate)
+    : allPages;
+
+  if (pages.length === 0) {
+    if (targetDate) {
+      logger.info(`No time blocks found for ${formatDate(targetDate.toDate())}.`);
+    } else {
+      logger.info('No time blocks found. Database is already empty.');
+    }
+    return;
+  }
+
+  if (targetDate) {
+    logger.debug(`Found ${pages.length} time blocks to delete for ${formatDate(targetDate.toDate())} (out of ${allPages.length} total)`);
+  } else {
+    logger.debug(`Found ${pages.length} time blocks to delete`);
+  }
+  logger.debug('Deleting time blocks...');
 
   let deleted = 0;
   let failed = 0;
@@ -37,10 +68,10 @@ export async function runPurgeMode(config: Config, confirmed: boolean): Promise<
       // Extract title for logging
       const title = extractTitle(page);
 
-      console.log(`  Deleting: ${title}`);
+      logger.debug(`Deleting: ${title}`);
       await client.deletePage(page.id);
       deleted++;
-      console.log(`  ✓ Deleted`);
+      logger.trace('Deleted');
 
       // Small delay to respect rate limits
       if (deleted + failed < pages.length) {
@@ -48,16 +79,16 @@ export async function runPurgeMode(config: Config, confirmed: boolean): Promise<
       }
     } catch (error) {
       failed++;
-      console.error(`  ✗ Failed to delete page ${page.id}:`);
+      logger.error(`Failed to delete page ${page.id}:`);
       if (error instanceof Error) {
-        console.error(`     Error: ${error.message}`);
+        logger.error(`Error: ${error.message}`);
       } else {
-        console.error(`     Error:`, error);
+        logger.error({ error }, 'Error');
       }
     }
   }
 
-  console.log(`\n✓ Purge complete: ${deleted} deleted, ${failed} failed`);
+  logger.info(`Purge complete: ${deleted} deleted, ${failed} failed`);
 }
 
 /**
@@ -75,6 +106,32 @@ function extractTitle(page: any): string {
     // Ignore errors
   }
   return page.id.substring(0, 8) + '...';
+}
+
+/**
+ * Filter pages to only include those matching the target date
+ * Checks the "When" property's start date
+ */
+function filterPagesByDate(pages: any[], targetDate: moment.Moment): any[] {
+  const targetDay = targetDate.clone().startOf('day');
+
+  return pages.filter((page) => {
+    try {
+      // Look for date properties (like "When")
+      for (const [, value] of Object.entries(page.properties)) {
+        const prop = value as any;
+        if (prop?.type === 'date' && prop.date?.start) {
+          const startDate = moment(prop.date.start).startOf('day');
+          if (startDate.isSame(targetDay)) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // If there's an error parsing the date, don't include this page
+    }
+    return false;
+  });
 }
 
 /**

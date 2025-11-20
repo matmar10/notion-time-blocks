@@ -7,6 +7,8 @@ import { runInitMode } from './init-mode';
 import { runScheduledMode } from './scheduled-mode';
 import { runPurgeMode } from './purge-mode';
 import { parseTargetDate } from './date-utils';
+import { createLogger, LogLevel } from './logger';
+import type pino from 'pino';
 
 async function main() {
   const argv = await yargs(hideBin(process.argv))
@@ -41,39 +43,64 @@ async function main() {
       description: 'Filter templates by Day column (e.g., Monday, Tuesday, etc.)',
       default: 'Default',
     })
+    .option('debug', {
+      type: 'boolean',
+      description: 'Enable debug logging',
+      default: false,
+    })
+    .option('verbose', {
+      type: 'boolean',
+      description: 'Enable verbose (trace) logging',
+      default: false,
+    })
     .example('$0 --init', 'Initialize schema and templates')
     .example('$0', 'Create time blocks for today')
     .example('$0 2024-03-15', 'Create time blocks for March 15, 2024')
     .example('$0 --day Monday', 'Create time blocks for today, filtered by Monday templates')
     .example('$0 2024-03-15 --day Friday', 'Create time blocks for March 15, 2024, filtered by Friday templates')
     .example('$0 --purge --confirm', 'Delete all time blocks from database')
+    .example('$0 2024-03-15 --purge --confirm', 'Delete time blocks for March 15, 2024')
+    .example('$0 --debug', 'Run with debug logging enabled')
+    .example('$0 --verbose', 'Run with verbose logging enabled')
     .help('h')
     .alias('h', 'help')
     .version('1.0.0')
     .alias('v', 'version')
     .parseAsync();
 
+  // Determine log level based on flags
+  let logLevel: LogLevel = 'info';
+  if (argv.verbose) {
+    logLevel = 'trace';
+  } else if (argv.debug) {
+    logLevel = 'debug';
+  }
+
+  // Create logger instance
+  const logger: pino.Logger = createLogger(logLevel);
+
   try {
     const config = getConfig();
-    console.log(config);
+    logger.debug({ config }, 'Configuration loaded');
 
     if (argv.purge) {
-      await runPurgeMode(config, argv.confirm as boolean);
+      const targetDate = argv.date ? parseTargetDate(argv.date as string) : undefined;
+      await runPurgeMode(config, argv.confirm as boolean, targetDate, logger);
       return;
     }
 
     if (argv.init) {
-      await runInitMode(config);
+      await runInitMode(config, logger);
     }
 
     const targetDate = parseTargetDate(argv.date as string | undefined);
     const dayFilter = argv.day as string | undefined;
-    await runScheduledMode(config, targetDate, dayFilter);
+    await runScheduledMode(config, targetDate, dayFilter, logger);
   } catch (error) {
     if (error instanceof Error) {
-      console.error(`Error: ${error.message}`);
+      logger.error(`Error: ${error.message}`);
     } else {
-      console.error('An unexpected error occurred:', error);
+      logger.error({ error }, 'An unexpected error occurred');
     }
     process.exit(1);
   }

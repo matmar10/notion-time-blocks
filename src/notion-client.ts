@@ -1,4 +1,5 @@
 import { Client } from '@notionhq/client';
+import type pino from 'pino';
 import {
   DatabaseObjectResponse,
   PageObjectResponse,
@@ -8,9 +9,11 @@ import { Config } from './types';
 
 export class NotionClientWrapper {
   private client: Client;
+  private logger: pino.Logger;
 
-  constructor(config: Config) {
+  constructor(config: Config, logger: pino.Logger) {
     this.client = new Client({ auth: config.notionApiKey });
+    this.logger = logger;
   }
 
   /**
@@ -33,6 +36,7 @@ export class NotionClientWrapper {
     let startCursor: string | undefined = undefined;
 
     while (hasMore) {
+      this.logger.trace(`Querying database ${databaseId}...`);
       const response: QueryDatabaseResponse = await this.client.databases.query({
         database_id: databaseId,
         start_cursor: startCursor,
@@ -41,6 +45,8 @@ export class NotionClientWrapper {
       pages.push(...(response.results as PageObjectResponse[]));
       hasMore = response.has_more;
       startCursor = response.next_cursor || undefined;
+
+      this.logger.trace(`Fetched ${response.results.length} pages, hasMore: ${hasMore}`);
 
       // Add small delay to respect rate limits
       if (hasMore) {

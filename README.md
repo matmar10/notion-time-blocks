@@ -141,9 +141,27 @@ node dist/index.js 2024-03-15
 npm start -- --purge --confirm
 node dist/index.js --purge --confirm
 
+# Enable debug logging for troubleshooting
+npm start -- --debug
+node dist/index.js --debug
+
+# Enable verbose (trace) logging for detailed output
+npm start -- --verbose
+node dist/index.js --verbose
+
 # View help
 npm start -- --help
 ```
+
+### Logging Levels
+
+The tool supports three logging levels:
+
+- **`info` (default)**: Only essential messages like success/failure summaries
+- **`--debug`**: Includes operational details like template loading, database IDs, progress
+- **`--verbose`**: Full trace logging including date calculations, API calls, property mappings
+
+Use `--debug` or `--verbose` when troubleshooting issues or understanding what the tool is doing.
 
 ## Operating Modes
 
@@ -254,42 +272,166 @@ npm start -- --purge --confirm
 
 You can automate the tool to run on a schedule using cron (macOS/Linux).
 
-### Daily Time Blocks Example
+### Daily Time Blocks - Weekdays Only (Mon-Thu)
 
-Run every weekday at 6 AM to create today's time blocks:
+Run Monday through Thursday at 6 AM to create today's time blocks (excludes Fri-Sun):
 
 ```bash
 # Edit crontab
 crontab -e
 
 # Add this line (adjust path to your project):
-0 6 * * 1-5 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
+0 6 * * 1-4 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
 ```
 
-### Monthly Reports Example
+**Cron Day Reference:**
+- `1` = Monday
+- `2` = Tuesday
+- `3` = Wednesday
+- `4` = Thursday
+- `5` = Friday
+- `6` = Saturday
+- `0` or `7` = Sunday
 
-Run on the 1st of each month at 9 AM:
+### Alternative Schedules
 
+**Run Monday-Friday (all weekdays):**
+```bash
+0 6 * * 1-5 cd /Users/matmar10/Projects/notion-time-blocks && /Users/matmar10/.nvm/versions/node/v22.18.0/bin/node dist/index.js >> output.log 2>&1
+```
+
+**Run Monday-Wednesday only:**
+```bash
+0 6 * * 1-3 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
+```
+
+**Run every weekday with debug logging:**
+```bash
+0 6 * * 1-4 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js --debug >> /tmp/notion-duplicator.log 2>&1
+```
+
+**Prepare the night before (Sun-Wed at 11 PM for Mon-Thu):**
+```bash
+0 23 * * 0-3 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
+```
+
+### Other Scheduling Examples
+
+**Monthly Reports - 1st of each month at 9 AM:**
 ```bash
 0 9 1 * * cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
 ```
 
-### Weekly Tasks Example
-
-Run every Monday at 8 AM:
-
+**Weekly Tasks - Every Monday at 8 AM:**
 ```bash
 0 8 * * 1 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
+```
+
+**Bi-weekly - Every other Monday:**
+```bash
+# Run on weeks 1, 3, 5, etc. of the month
+0 8 1-7,15-21,29-31 * 1 cd /path/to/notion-time-blocks && /usr/local/bin/node dist/index.js >> /tmp/notion-duplicator.log 2>&1
+```
+
+### Cron Script with Error Handling
+
+Create a wrapper script `cron-sync.sh` for better error handling:
+
+```bash
+#!/bin/bash
+# Save as cron-sync.sh in your project directory
+
+set -e
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${SCRIPT_DIR}/logs"
+LOG_FILE="${LOG_DIR}/cron-$(date +%Y-%m-%d).log"
+
+# Create log directory
+mkdir -p "${LOG_DIR}"
+
+# Function to log with timestamp
+log() {
+    echo "[$(date +%Y-%m-%d\ %H:%M:%S)] $*" | tee -a "${LOG_FILE}"
+}
+
+# Check day of week (1=Mon, 5=Fri, 6=Sat, 7=Sun)
+DAY_OF_WEEK=$(date +%u)
+
+# Skip if Friday, Saturday, or Sunday
+if [ "${DAY_OF_WEEK}" -ge 5 ]; then
+    log "Skipping - weekend day detected"
+    exit 0
+fi
+
+# Change to script directory
+cd "${SCRIPT_DIR}"
+
+# Load environment variables
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    export $(grep -v '^#' "${SCRIPT_DIR}/.env" | xargs)
+fi
+
+# Run the sync
+log "Running time blocks sync..."
+if node dist/index.js 2>&1 | tee -a "${LOG_FILE}"; then
+    log "✓ Sync completed successfully"
+else
+    log "✗ Sync failed"
+    exit 1
+fi
+
+# Clean up old logs (keep 30 days)
+find "${LOG_DIR}" -name "cron-*.log" -type f -mtime +30 -delete 2>/dev/null || true
+```
+
+Make it executable and schedule it:
+```bash
+chmod +x cron-sync.sh
+
+# Edit crontab
+crontab -e
+
+# Add this line:
+0 6 * * 1-4 /path/to/notion-time-blocks/cron-sync.sh
+```
+
+### Viewing Logs
+
+```bash
+# View today's log
+tail -f /tmp/notion-duplicator.log
+
+# Or with the script above:
+tail -f logs/cron-$(date +%Y-%m-%d).log
+
+# View last 50 lines
+tail -50 /tmp/notion-duplicator.log
+
+# Search logs for errors
+grep -i error /tmp/notion-duplicator.log
 ```
 
 ### Setup Checklist
 
 Before setting up cron, make sure:
-1. Replace `/path/to/notion-time-blocks` with your actual project path
-2. The `.env` file exists in the project directory with correct credentials
-3. You've run `--init` mode at least once to save templates
-4. Test the command manually first to ensure it works
-5. Check the log file (`/tmp/notion-duplicator.log`) after the first automated run
+1. ✅ Replace `/path/to/notion-time-blocks` with your actual project path (use absolute paths)
+2. ✅ The `.env` file exists in the project directory with correct credentials
+3. ✅ You've run `--init` mode at least once to save templates
+4. ✅ The project is built (`npm run build`)
+5. ✅ Test the command manually first to ensure it works
+6. ✅ Check the log file after the first automated run
+7. ✅ On macOS, grant Full Disk Access to `cron` in System Preferences if needed
+
+### macOS Specific: Full Disk Access
+
+On macOS Catalina+, you may need to grant cron access:
+1. Open **System Preferences** → **Security & Privacy** → **Privacy**
+2. Select **Full Disk Access**
+3. Click the lock to make changes
+4. Click `+` and add `/usr/sbin/cron`
+5. Restart cron: `sudo launchctl kickstart -k system/com.vixie.cron`
 
 ## Advanced Usage
 

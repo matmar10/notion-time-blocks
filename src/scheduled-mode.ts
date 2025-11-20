@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import yaml from 'js-yaml';
 import moment from 'moment-timezone';
+import type pino from 'pino';
 import { NotionClientWrapper } from './notion-client';
 import { Config, SavedTemplates } from './types';
 import { formatDate, formatDateTime } from './date-utils';
@@ -8,21 +9,21 @@ import { formatDate, formatDateTime } from './date-utils';
 /**
  * Scheduled mode: Create time blocks for a specific date
  */
-export async function runScheduledMode(config: Config, targetDate: moment.Moment, dayFilter?: string): Promise<void> {
-  console.log('Running scheduled mode...');
+export async function runScheduledMode(config: Config, targetDate: moment.Moment, dayFilter: string | undefined, logger: pino.Logger): Promise<void> {
+  logger.info('Running scheduled mode...');
 
   const today = moment();
   const isToday = targetDate.isSame(today, 'day');
   const dateDisplay = isToday ? `${formatDate(targetDate.toDate())} (today)` : formatDate(targetDate.toDate());
 
-  console.log(`Target date: ${dateDisplay}`);
+  logger.debug(`Target date: ${dateDisplay}`);
   if (dayFilter) {
-    console.log(`Day filter: ${dayFilter}`);
+    logger.debug(`Day filter: ${dayFilter}`);
   }
-  console.log(`Time Blocks Database ID: ${config.timeBlocksDatabase}`);
+  logger.debug(`Time Blocks Database ID: ${config.timeBlocksDatabase}`);
 
   // Load templates
-  console.log('\nLoading templates...');
+  logger.debug('Loading templates...');
   const templatesContent = await fs.readFile(config.templatesFilePath, 'utf-8');
   const savedTemplates = yaml.load(templatesContent) as SavedTemplates;
 
@@ -30,61 +31,62 @@ export async function runScheduledMode(config: Config, targetDate: moment.Moment
     throw new Error('No templates found. Run with --init first to create templates.');
   }
 
-  console.log(`Found ${savedTemplates.templates.length} templates`);
+  logger.debug(`Found ${savedTemplates.templates.length} templates`);
 
   // Find the reference date (earliest date across all templates)
   const referenceDate = findReferenceDate(savedTemplates.templates);
-  console.log(`Reference date: ${referenceDate.format('YYYY-MM-DD')}`);
+  logger.debug(`Reference date: ${referenceDate.format('YYYY-MM-DD')}`);
 
   // Sort templates by start time (ascending order)
   const sortedTemplates = sortTemplatesByStartTime(savedTemplates.templates);
-  console.log('Templates sorted by start time');
+  logger.debug('Templates sorted by start time');
 
   // Filter templates by day if specified
   let templatesToCreate = sortedTemplates;
   if (dayFilter) {
     templatesToCreate = filterTemplatesByDay(sortedTemplates, dayFilter);
-    console.log(`Filtered to ${templatesToCreate.length} templates matching day: ${dayFilter}`);
+    logger.debug(`Filtered to ${templatesToCreate.length} templates matching day: ${dayFilter}`);
 
     if (templatesToCreate.length === 0) {
-      console.log('\n⚠ No templates found matching the specified day filter.');
-      console.log('Exiting without creating any time blocks.');
+      logger.warn('No templates found matching the specified day filter.');
+      logger.info('Exiting without creating any time blocks.');
       return;
     }
   }
 
-  const client = new NotionClientWrapper(config);
+  const client = new NotionClientWrapper(config, logger);
 
   // Extract Day values from templates and ensure they exist in the schema
   const dayValues = extractDayValues(templatesToCreate);
-  await ensureDayOptionsExist(client, config.timeBlocksDatabase, dayValues);
+  await ensureDayOptionsExist(client, config.timeBlocksDatabase, dayValues, logger);
 
   // Create entries in the time blocks database for each template (serially)
-  console.log('\nCreating time blocks in time blocks database (in order)...');
+  logger.debug('Creating time blocks in time blocks database (in order)...');
   let created = 0;
 
   for (const template of templatesToCreate) {
     // Log what we're about to create
-    console.log(`\n  Creating: ${template.title}`);
+    logger.debug(`Creating: ${template.title}`);
 
     const updatedProperties = updatePropertiesForDate(
       template.properties,
       targetDate,
-      referenceDate
+      referenceDate,
+      logger
     );
 
     // Log date range for debugging
-    logDateRange(template.properties, updatedProperties);
+    logDateRange(template.properties, updatedProperties, logger);
 
     await client.createPage(config.timeBlocksDatabase, updatedProperties);
     created++;
-    console.log(`  ✓ Successfully created`);
+    logger.trace('Successfully created');
 
     // Small delay to respect rate limits (always delay between requests)
     await delay(350);
   }
 
-  console.log(`\n✓ Created ${created} of ${templatesToCreate.length} time blocks`);
+  logger.info(`Created ${created} of ${templatesToCreate.length} time blocks`);
 }
 
 /**
@@ -98,6 +100,7 @@ function updatePropertiesForDate(
   properties: Record<string, any>,
   targetDate: moment.Moment,
   referenceDate: moment.Moment,
+  logger: pino.Logger
 ): Record<string, any> {
   const updated: Record<string, any> = {};
 
@@ -114,24 +117,24 @@ function updatePropertiesForDate(
       const start = moment(value.date.start);
       const end = moment(value.date.end);
 
-      const newStart = combineDateTimeWithReference(start, targetDate, referenceDate);
-      const newEnd = combineDateTimeWithReference(end, targetDate, referenceDate);
-      console.log({
+      const newStart = combineDateTimeWithReference(start, targetDate, referenceDate, logger);
+      const newEnd = combineDateTimeWithReference(end, targetDate, referenceDate, logger);
+      logger.trace({
         newStart: newStart.format(),
         newStartISO: newStart.toISOString(),
         newEnd: newEnd.format(),
         newEndISO: newEnd.toISOString(),
-      })
+      }, 'Date calculation result');
 
       // Validate that start is before end
       if (newStart && newEnd) {
         if (newStart.isSameOrAfter(newEnd)) {
-          console.warn(
-            `    ⚠ Warning: Invalid date range detected for property "${key}"`
+          logger.warn(
+            `Warning: Invalid date range detected for property "${key}"`
           );
-          console.warn(`       Start: ${newStart}`);
-          console.warn(`       End: ${newEnd}`);
-          console.warn(`       Skipping this property to avoid error`);1
+          logger.warn(`Start: ${newStart}`);
+          logger.warn(`End: ${newEnd}`);
+          logger.warn('Skipping this property to avoid error');
           continue; // Skip this property
         }
       }
@@ -241,7 +244,8 @@ function updatePropertiesForDate(
  */
 function logDateRange(
   originalProperties: Record<string, any>,
-  updatedProperties: Record<string, any>
+  updatedProperties: Record<string, any>,
+  logger: pino.Logger
 ): void {
   // Find date properties and log them
   for (const [key, value] of Object.entries(originalProperties)) {
@@ -254,14 +258,14 @@ function logDateRange(
         const newStart = updated.date.start;
         const newEnd = updated.date.end;
 
-        console.log(`     Property: ${key}`);
+        logger.trace(`Property: ${key}`);
         if (originalStart && newStart) {
-          console.log(`       Template start: ${formatDateTime(originalStart)}`);
-          console.log(`       New start:      ${formatDateTime(newStart)}`);
+          logger.trace(`Template start: ${formatDateTime(originalStart)}`);
+          logger.trace(`New start:      ${formatDateTime(newStart)}`);
         }
         if (originalEnd && newEnd) {
-          console.log(`       Template end:   ${formatDateTime(originalEnd)}`);
-          console.log(`       New end:        ${formatDateTime(newEnd)}`);
+          logger.trace(`Template end:   ${formatDateTime(originalEnd)}`);
+          logger.trace(`New end:        ${formatDateTime(newEnd)}`);
         }
       }
     }
@@ -371,28 +375,29 @@ function combineDateTimeWithReference(
   templateDate: moment.Moment,
   targetDate: moment.Moment,
   referenceDate: moment.Moment,
+  logger: pino.Logger
 ): moment.Moment {
-  console.log('RAW TEMPLATE DATE:', templateDate.format());
-  console.log('RAW TARGET DATE:', targetDate.format());
-  console.log('RAW REFERENCE DATE:', referenceDate.format());
+  logger.trace(`RAW TEMPLATE DATE: ${templateDate.format()}`);
+  logger.trace(`RAW TARGET DATE: ${targetDate.format()}`);
+  logger.trace(`RAW REFERENCE DATE: ${referenceDate.format()}`);
 
   const templateDay = templateDate.clone().startOf('day');
-  console.log('TEMPLATE DAY:', templateDay.format());
+  logger.trace(`TEMPLATE DAY: ${templateDay.format()}`);
   const refDay = referenceDate.clone().startOf('day');
-  console.log('REFERENCE DAY:', refDay.format());
+  logger.trace(`REFERENCE DAY: ${refDay.format()}`);
   const targetDay = targetDate.clone().startOf('day');
-  console.log('TARGET DAY:', targetDay.format());
+  logger.trace(`TARGET DAY: ${targetDay.format()}`);
 
   // Calculate how many days after the reference date this template datetime is
   const dayOffset = templateDay.diff(refDay, 'days');
-  console.log('DAY OFFSET:', dayOffset);
+  logger.trace(`DAY OFFSET: ${dayOffset}`);
 
-  console.log('TEMPLATE DATE', {
+  logger.trace({
     hour: templateDate.hour(),
     minute: templateDate.minute(),
     second: templateDate.second(),
     millisecond: templateDate.millisecond(),
-  })
+  }, 'TEMPLATE DATE');
 
   // Create new date with target year/month/day (plus offset) but template time
   return targetDay.clone()
@@ -445,13 +450,14 @@ function extractDayValues(templates: any[]): string[] {
 async function ensureDayOptionsExist(
   client: NotionClientWrapper,
   databaseId: string,
-  dayValues: string[]
+  dayValues: string[],
+  logger: pino.Logger
 ): Promise<void> {
   if (dayValues.length === 0) {
     return; // No Day values to check
   }
 
-  console.log('\nChecking Day select options in database schema...');
+  logger.debug('Checking Day select options in database schema...');
 
   // Get current database schema
   const schema = await client.getDatabaseSchema(databaseId);
@@ -471,8 +477,8 @@ async function ensureDayOptionsExist(
   }
 
   if (!dayProperty || !dayPropertyName) {
-    console.log('⚠ Warning: No "Day" select/multi_select property found in database schema.');
-    console.log('   Day values in templates will be skipped.');
+    logger.warn('Warning: No "Day" select/multi_select property found in database schema.');
+    logger.warn('Day values in templates will be skipped.');
     return;
   }
 
@@ -491,12 +497,12 @@ async function ensureDayOptionsExist(
   );
 
   if (missingOptions.length === 0) {
-    console.log('✓ All Day options already exist in schema');
+    logger.debug('All Day options already exist in schema');
     return;
   }
 
-  console.log(`Found ${missingOptions.length} missing Day option(s): ${missingOptions.join(', ')}`);
-  console.log('Adding missing options to database schema...');
+  logger.debug(`Found ${missingOptions.length} missing Day option(s): ${missingOptions.join(', ')}`);
+  logger.debug('Adding missing options to database schema...');
 
   // Create new options to add
   const newOptions = missingOptions.map((name) => ({
@@ -516,7 +522,7 @@ async function ensureDayOptionsExist(
     [dayPropertyName]: propertyUpdate,
   });
 
-  console.log('✓ Successfully added missing Day options to schema');
+  logger.debug('Successfully added missing Day options to schema');
 }
 
 /**
